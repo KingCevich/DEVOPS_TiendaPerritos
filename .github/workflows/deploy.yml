@@ -1,19 +1,15 @@
 name: CI/CD - Build, Push & Deploy a EKS
 
-# Se ejecuta automaticamente con cada push a main,
-# y tambien se puede disparar manualmente desde la pestana Actions.
+
 on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
 
 env:
-  AWS_REGION: us-east-1
-  CLUSTER_NAME: devopseks
   ECR_FRONTEND_REPO: tienda-frontend
   ECR_BACKEND_REPO: tienda-backend
   ECR_DB_REPO: tienda-db
-  IMAGE_TAG: eks-v1
 
 jobs:
   build-and-deploy:
@@ -21,64 +17,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Descarga el codigo del repo en el runner de GitHub
+
       - name: Checkout del repositorio
         uses: actions/checkout@v4
 
-      # 2. Configura las credenciales de AWS (Learner Lab) desde GitHub Secrets
+
       - name: Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      # 3. Login en Amazon ECR
+
       - name: Login en Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 4. Obtiene el Account ID dinamicamente (igual que en deploy.sh)
+
       - name: Obtener Account ID y construir ECR_URL
         id: account
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ECR_URL=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> "$GITHUB_OUTPUT"
+          echo "ECR_URL=${ACCOUNT_ID}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com" >> "$GITHUB_OUTPUT"
 
-      # 5. Build y push de la imagen del Frontend
+
+      - name: Definir tag de imagen
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+
       - name: Build & Push Frontend
         run: |
           docker build -t ${{ env.ECR_FRONTEND_REPO }} ./frontend
           docker tag ${{ env.ECR_FRONTEND_REPO }}:latest ${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_FRONTEND_REPO }}:${{ env.IMAGE_TAG }}
           docker push ${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_FRONTEND_REPO }}:${{ env.IMAGE_TAG }}
 
-      # 6. Build y push de la imagen del Backend
+
       - name: Build & Push Backend
         run: |
           docker build -t ${{ env.ECR_BACKEND_REPO }} ./backend
           docker tag ${{ env.ECR_BACKEND_REPO }}:latest ${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_BACKEND_REPO }}:${{ env.IMAGE_TAG }}
           docker push ${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_BACKEND_REPO }}:${{ env.IMAGE_TAG }}
 
-      # 7. Build y push de la imagen de la DB
+
       - name: Build & Push DB
         run: |
           docker build -t ${{ env.ECR_DB_REPO }} ./db
           docker tag ${{ env.ECR_DB_REPO }}:latest ${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_DB_REPO }}:${{ env.IMAGE_TAG }}
           docker push ${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_DB_REPO }}:${{ env.IMAGE_TAG }}
 
-      # 8. Configura kubectl para apuntar al cluster EKS
+      # Configura kubectl para apuntar al cluster EKS
       - name: Configurar kubeconfig
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
 
-      # 9. Reemplaza el placeholder {{ECR_URL}} en los manifests (igual que deploy.sh)
+
       - name: Inyectar ECR_URL en manifests
         run: |
-          find ./k8s -type f -name "*.yaml" -exec sed -i "s|{{ECR_URL}}|${{ steps.account.outputs.ECR_URL }}|g" {} \;
+          find ./k8s -type f -name "*.yaml" -exec sed -i \
+            "s|{{ECR_URL}}|${{ steps.account.outputs.ECR_URL }}|g" {} \;
 
-      # 10. Aplica todos los manifests (namespace, mysql, backend, frontend y HPA)
-      - name: Deploy en EKS
+
+      - name: Deploy de manifests base en EKS
         run: |
           kubectl apply -f ./k8s/namespace.yaml
           kubectl apply -f ./k8s/mysql-secret.yaml
@@ -91,24 +92,28 @@ jobs:
           kubectl apply -f ./k8s/frontend-service.yaml
           kubectl apply -f ./k8s/frontend-hpa.yaml
 
-      # 11. Forzar rollout para que los pods tomen la imagen nueva (mismo tag, distinto digest)
-      - name: Forzar rollout de backend y frontend
-        run: |
-          kubectl rollout restart deployment/tienda-backend -n tienda
-          kubectl rollout restart deployment/tienda-frontend -n tienda
-          kubectl rollout status deployment/tienda-backend -n tienda --timeout=180s
-          kubectl rollout status deployment/tienda-frontend -n tienda --timeout=180s
 
-      # 12. Muestra la URL publica final y el estado de los pods (evidencia para IE6/IE9)
+      - name: Actualizar imagenes en EKS (tag por commit)
+        run: |
+          kubectl set image deployment/tienda-backend \
+            backend=${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_BACKEND_REPO }}:${{ env.IMAGE_TAG }} \
+            -n ${{ secrets.EKS_NAMESPACE }}
+          kubectl set image deployment/tienda-frontend \
+            frontend=${{ steps.account.outputs.ECR_URL }}/${{ env.ECR_FRONTEND_REPO }}:${{ env.IMAGE_TAG }} \
+            -n ${{ secrets.EKS_NAMESPACE }}
+          kubectl rollout status deployment/tienda-backend -n ${{ secrets.EKS_NAMESPACE }} --timeout=180s
+          kubectl rollout status deployment/tienda-frontend -n ${{ secrets.EKS_NAMESPACE }} --timeout=180s
+
+
       - name: Mostrar resultado del deploy
         run: |
           echo "===================================="
-          echo "Pods en namespace tienda:"
-          kubectl get pods -n tienda
+          echo "Pods en namespace ${{ secrets.EKS_NAMESPACE }}:"
+          kubectl get pods -n ${{ secrets.EKS_NAMESPACE }}
           echo ""
-          echo "HPA en namespace tienda:"
-          kubectl get hpa -n tienda
+          echo "HPA en namespace ${{ secrets.EKS_NAMESPACE }}:"
+          kubectl get hpa -n ${{ secrets.EKS_NAMESPACE }}
           echo ""
-          HOSTNAME=$(kubectl get svc tienda-frontend -n tienda -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          HOSTNAME=$(kubectl get svc tienda-frontend -n ${{ secrets.EKS_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "APLICACION DISPONIBLE EN: http://${HOSTNAME}"
           echo "===================================="
