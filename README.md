@@ -28,8 +28,7 @@ Proyecto desarrollado para la Evaluación de Introducción a Herramientas DevOps
 
 Los servicios definidos corren como pods independientes dentro de un mismo clúster EKS, comunicándose mediante el DNS interno integrado de Kubernetes (Services), sin necesidad de IPs fijas ni de una instancia EC2 dedicada por servicio.
 
-![Arquitectura](<img width="1995" height="1095" alt="arquitectura_v3" src="https://github.com/user-attachments/assets/6fc57ec9-3a2e-4744-ac12-7394eaeebf57" />
-)
+<img src="https://raw.githubusercontent.com/ToniC-3PO/miniature-tribble-img/refs/heads/main/arquitectura_v3.png" alt="Arquitectura" width="900" />
 
 ## Stack tecnológico
 
