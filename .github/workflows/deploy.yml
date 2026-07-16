@@ -77,7 +77,14 @@ jobs:
         run: |
           find ./k8s -type f -name "*.yaml" -exec sed -i \
             "s|{{ECR_URL}}|${{ steps.account.outputs.ECR_URL }}|g" {} \;
-
+      
+      - name: Crear Secret MySQL desde GitHub Secrets
+        run: |
+          kubectl apply -f ./k8s/namespace.yaml
+          kubectl create secret generic mysql-secret \
+            --from-literal=MYSQL_ROOT_PASSWORD=${{ secrets.MYSQL_ROOT_PASSWORD }} \
+            -n ${{ secrets.EKS_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy de manifests base en EKS
         run: |
