@@ -99,7 +99,14 @@ jobs:
           kubectl apply -f ./k8s/frontend-service.yaml
           kubectl apply -f ./k8s/frontend-hpa.yaml
 
-
+      - name: Escalar a minimo antes del rollout
+        run: |
+          kubectl scale deployment/tienda-backend --replicas=2 \
+            -n ${{ secrets.EKS_NAMESPACE }}
+          kubectl scale deployment/tienda-frontend --replicas=2 \
+            -n ${{ secrets.EKS_NAMESPACE }}
+          sleep 15
+          
       - name: Actualizar imagenes en EKS (tag por commit)
         run: |
           kubectl set image deployment/tienda-backend \
